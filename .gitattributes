@@ -1,0 +1,5 @@
+**/s/* gitlab-language=armasm linguist-language=assembly
+*,fe1 gitlab-language=make linguist-language=makefile
+VersionAsm gitlab-language=armasm linguist-language=assembly
+VersionNum gitlab-language=c linguist-language=c
+c/* gitlab-language=c linguist-language=c
