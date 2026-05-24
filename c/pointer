@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "kernel.h"
 #include "riscos/Events.h"
@@ -19,6 +20,14 @@
 #include "mouse.h"
 #include "os.h"
 #include "pointer.h"
+
+//#define DEBUG
+
+#ifdef DEBUG
+#define dprintf if (1) printf
+#else
+#define dprintf if (0) printf
+#endif
 
 #define OSBYTE_WRITE_POINTER_SHAPE 0x6a
 #define OSBYTE_INKEY               0x81
@@ -171,6 +180,7 @@ void ospointer_pointer_select_mouse_type(void)
 
     r.r[0] = PointerReason_Selected;
     r.r[1] = ospointer_mouse_type();
+    dprintf("Selecting pointer type %i\n", r.r[1]);
     ospointer_os_call_pointer_vector(&r);
 }
 
@@ -289,6 +299,8 @@ int ospointer_pointer_osword(_kernel_swi_regs *r)
     block = (unsigned char *)(uintptr_t)r->r[1];
     reason = block[0];
 
+    dprintf("Pointer operation: %i\n", reason);
+
     switch (reason)
     {
         case 0:
@@ -337,6 +349,7 @@ int ospointer_pointer_osword(_kernel_swi_regs *r)
             vr.r[1] = data;
             vr.r[2] = height;
             vr.r[6] = shape;
+            dprintf("Define pointer %i, size %ix%i\n", shape, width, height);
             ospointer_os_call_video_pointer(VideoV_Pointer_Define,
                                             display_number,
                                             &vr);
@@ -347,6 +360,7 @@ int ospointer_pointer_osword(_kernel_swi_regs *r)
                 int r1;
 
                 r1 = pointer_shape;
+                dprintf("Pointer shape is %i\n", pointer_shape);
                 ospointer_os_byte(OSBYTE_WRITE_POINTER_SHAPE,
                                   r1,
                                   NULL,
@@ -456,14 +470,23 @@ void ospointer_pointer_update(void)
     {
         if (!pointer_removed)
         {
+            vr.r[3] = display_ywind_limit;
             ospointer_os_call_video_pointer(VideoV_Pointer_Remove,
                                             display_number,
                                             &vr);
             pointer_removed = 1;
             pointer_last_x = -1;
             pointer_last_y = -1;
+            dprintf("Pointer removed\n");
         }
         return;
+    }
+    else
+    {
+        if (pointer_removed)
+        {
+            dprintf("Pointer restored?\n");
+        }
     }
 
     index = shape - 1;
@@ -472,6 +495,7 @@ void ospointer_pointer_update(void)
     {
         if (!pointer_removed)
         {
+            vr.r[3] = display_ywind_limit;
             ospointer_os_call_video_pointer(VideoV_Pointer_Remove,
                                             display_number,
                                             &vr);
@@ -479,6 +503,7 @@ void ospointer_pointer_update(void)
             pointer_last_x = -1;
             pointer_last_y = -1;
         }
+        dprintf("Pointer removed (height = 0)\n");
         return;
     }
 
@@ -494,8 +519,11 @@ void ospointer_pointer_update(void)
     pointer_removed = 0;
     pointer_last_x = x;
     pointer_last_y = y;
+    vr.r[0] = def->height;
     vr.r[1] = y;
     vr.r[2] = x;
+    vr.r[3] = display_ywind_limit;
+    dprintf("Call VideoV with pointer info: %i, %i\n", x, y);
     ospointer_os_call_video_pointer(VideoV_Pointer_Update,
                                     display_number,
                                     &vr);
@@ -633,6 +661,7 @@ static void update_zero_page(void)
 
 static void reset_video_cache(void)
 {
+    dprintf("reset_video_cache\n");
     pointer_removed = 0;
     pointer_last_x = -1;
     pointer_last_y = -1;

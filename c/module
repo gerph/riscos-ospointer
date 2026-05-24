@@ -17,7 +17,7 @@
 #include "os.h"
 #include "pointer.h"
 
-/* #define DEBUG */
+#define DEBUG
 
 #ifdef DEBUG
 #define dprintf if (1) printf
