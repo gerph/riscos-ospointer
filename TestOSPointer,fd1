@@ -1,0 +1,31 @@
+REM >TestOSPointer
+REM Tests for the OSPointer module
+ON ERROR ERROR EXT ERR, REPORT$ + " at line " + STR$(ERL/10)
+
+PROCtest_os_pointer
+PRINT "OSPointer tests passed"
+END
+
+DEFPROCtest_os_pointer
+LOCAL type%, new_type%, type2%, scroll_x%, scroll_y%, err%, flags%
+SYS "OS_Pointer", 0 TO type%
+PROCassert(type% >= 0 AND type% <= 255, "Mouse type is a byte")
+new_type% = (type% + 1) AND 255
+SYS "OS_Pointer", 1, new_type%
+SYS "OS_Pointer", 0 TO type2%
+PROCassert(type2% = new_type%, "Mouse type can be set")
+SYS "OS_Pointer", 1, type%
+SYS "OS_Pointer", 0 TO type2%
+PROCassert(type2% = type%, "Mouse type can be restored")
+SYS "OS_Pointer", 2 TO scroll_x%, scroll_y%
+PROCassert(scroll_x% = 0, "Initial scroll X is zero")
+PROCassert(scroll_y% = 0, "Initial scroll Y is zero")
+SYS "XOS_Pointer", 99 TO err%;flags%
+PROCassert((flags% AND 1) <> 0, "Bad OS_Pointer reason returns error")
+PROCassert(err%!0 = &1E, "Bad OS_Pointer reason error number")
+ENDPROC
+
+DEFPROCassert(ok%, message$)
+IF ok% THEN ENDPROC
+ERROR 1, "Assertion failed: " + message$
+ENDPROC

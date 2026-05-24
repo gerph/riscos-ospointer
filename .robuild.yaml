@@ -36,6 +36,19 @@ jobs:
       - echo *** Build the RAM module (32-bit) ***
       - amu -f Makefile ram
 
+      # Tests - loading to check that it starts up
+      - echo
+      - echo *** Load the module ***
+      - RMLoad rm32.OSPointer
+
+      - echo
+      - echo *** Test that the module works ***
+      - Run TestOSPointer
+
+      - echo
+      - echo *** Kill the module ***
+      - RMKill OSPointer
+
       - echo
       - echo *** Build the RAM module (26-bit) ***
       - amu -f Makefile ram BUILD26=1 BUILD32=
@@ -48,20 +61,6 @@ jobs:
       - echo
       - echo *** Build the ROM module (26-bit) ***
       - amu -f Makefile rom BUILD26=1 BUILD32=
-
-      # Tests - loading to check that it starts up
-      - echo
-      - echo *** Load the module ***
-      - RMLoad rm32.OSPointer
-
-      # Insert any testing here...
-      #- echo
-      #- echo *** Test that the module works ***
-      #- /TestModule
-
-      - echo
-      - echo *** Kill the module ***
-      - RMKill OSPointer
 
       # Construct the artifacts to release
       - echo *** Copy artifacts ***

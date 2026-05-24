@@ -1,0 +1,168 @@
+/*******************************************************************
+ * File:        mouse
+ * Purpose:     Mouse state declarations for OSPointer
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef OSPOINTER_MOUSE_H
+#define OSPOINTER_MOUSE_H
+
+#include "kernel.h"
+
+/*******************************************************************
+ Function:      ospointer_mouse_init
+ Description:   Initialise mouse state from CMOS
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_init(void);
+
+/*******************************************************************
+ Function:      ospointer_mouse_type
+ Description:   Return the current selected mouse type
+ Parameters:    none
+ Returns:       mouse type
+ ******************************************************************/
+int ospointer_mouse_type(void);
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_type
+ Description:   Set the current selected mouse type
+ Parameters:    type = new mouse type
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_type(int type);
+
+/*******************************************************************
+ Function:      ospointer_mouse_buttons
+ Description:   Return the current mouse button mask
+ Parameters:    none
+ Returns:       button mask
+ ******************************************************************/
+int ospointer_mouse_buttons(void);
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_position
+ Description:   Set mouse position and optionally flush the buffer
+ Parameters:    x = new X position
+                y = new Y position
+                flush = non-zero to flush buffered packets
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_position(int x, int y, int flush);
+
+/*******************************************************************
+ Function:      ospointer_mouse_position
+ Description:   Return mouse position
+ Parameters:    x = updated with X position
+                y = updated with Y position
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_position(int *x, int *y);
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_bounds
+ Description:   Set mouse bounds and clamp current position
+ Parameters:    left = left coordinate
+                bottom = bottom coordinate
+                right = right coordinate
+                top = top coordinate
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_bounds(int left, int bottom, int right, int top);
+
+/*******************************************************************
+ Function:      ospointer_mouse_bounds
+ Description:   Return mouse bounds
+ Parameters:    left = updated with left coordinate
+                bottom = updated with bottom coordinate
+                right = updated with right coordinate
+                top = updated with top coordinate
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_bounds(int *left, int *bottom, int *right, int *top);
+
+/*******************************************************************
+ Function:      ospointer_mouse_position_in_bounds
+ Description:   Test whether a coordinate lies inside current bounds
+ Parameters:    x = X coordinate
+                y = Y coordinate
+ Returns:       non-zero if inside bounds
+ ******************************************************************/
+int ospointer_mouse_position_in_bounds(int x, int y);
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_multipliers
+ Description:   Set mouse movement multipliers
+ Parameters:    x_mult = X multiplier
+                y_mult = Y multiplier
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_multipliers(int x_mult, int y_mult);
+
+/*******************************************************************
+ Function:      ospointer_mouse_multipliers
+ Description:   Return mouse movement multipliers
+ Parameters:    x_mult = updated with X multiplier
+                y_mult = updated with Y multiplier
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_multipliers(int *x_mult, int *y_mult);
+
+/*******************************************************************
+ Function:      ospointer_mouse_poll
+ Description:   Poll PointerV for movement, scroll and buttons
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_poll(void);
+
+/*******************************************************************
+ Function:      ospointer_mouse_read
+ Description:   Return a MouseV position packet
+ Parameters:    r = register block to update
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_read(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_mouse_key
+ Description:   Process KeyV mouse button transitions
+ Parameters:    r = register block
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_key(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_mouse_event
+ Description:   Handle VSync and scroll events
+ Parameters:    r = register block
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_event(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_mouse_register_buffer
+ Description:   Register the mouse buffer
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_mouse_register_buffer(void);
+
+/*******************************************************************
+ Function:      ospointer_mouse_deregister_buffer
+ Description:   Deregister the mouse buffer
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_deregister_buffer(void);
+
+/*******************************************************************
+ Function:      ospointer_mouse_buffer_manager_starting
+ Description:   Re-register mouse buffer after BufferManager starts
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_buffer_manager_starting(void);
+
+#endif

@@ -1,0 +1,582 @@
+/*******************************************************************
+ * File:        mouse
+ * Purpose:     Mouse driver polling, buffering and event handling
+ * Author:      Gerph
+ ******************************************************************/
+
+#include <stdlib.h>
+
+#include "kernel.h"
+#include "riscos/CMOS.h"
+#include "riscos/Events.h"
+#include "riscos/Pointer.h"
+
+#include "mouse.h"
+#include "os.h"
+#include "pointer.h"
+
+#define MOUSE_BUFFER_SIZE          0x40
+#define KEYV_KEY_RELEASE          1
+#define KEYV_KEY_PRESS            2
+#define KEYV_STATE_CHANGE         3
+#define KEYV_STATE_SOURCE_SIMPLE  0
+#define KEY_MOUSE_LEFT            0x70
+#define KEY_MOUSE_MIDDLE          0x71
+#define KEY_MOUSE_RIGHT           0x72
+#define KEY_EXT_MOUSE_BASE        0x90000
+#define MOUSE_BUTTON_RIGHT        1
+#define MOUSE_BUTTON_MIDDLE       2
+#define MOUSE_BUTTON_LEFT         4
+
+static unsigned char mouse_buffer[MOUSE_BUFFER_SIZE];
+static int buffer_registered;
+static int mouse_type_value;
+static int mouse_buttons_value;
+static int mouse_x;
+static int mouse_y;
+static int mouse_x_mult;
+static int mouse_y_mult;
+static int mouse_left;
+static int mouse_bottom;
+static int mouse_right;
+static int mouse_top;
+
+static void mouse_button_change(int buttons);
+static void process_mouse_xy(int dx, int dy);
+static void process_mouse_xy_scrolls(int dx, int dy, int scroll_x,
+                                     int scroll_y, int buttons);
+static int clamp(int value, int min, int max);
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_init
+ Description:   Initialise mouse state from CMOS
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_init(void)
+{
+    int mult;
+
+    mult = (signed char)ospointer_os_read_cmos(MouseStepCMOS);
+    if (mult == 0)
+    {
+        mult = 1;
+    }
+
+    mouse_x_mult = mult;
+    mouse_y_mult = mult;
+    mouse_buttons_value = 0;
+    mouse_x = 0;
+    mouse_y = 0;
+    mouse_type_value = ospointer_os_read_cmos(MouseCMOS);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_type
+ Description:   Return the current selected mouse type
+ Parameters:    none
+ Returns:       mouse type
+ ******************************************************************/
+int ospointer_mouse_type(void)
+{
+    return mouse_type_value & 0xff;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_type
+ Description:   Set the current selected mouse type
+ Parameters:    type = new mouse type
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_type(int type)
+{
+    mouse_type_value = type & 0xff;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_buttons
+ Description:   Return the current mouse button mask
+ Parameters:    none
+ Returns:       button mask
+ ******************************************************************/
+int ospointer_mouse_buttons(void)
+{
+    return mouse_buttons_value & 0xff;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_position
+ Description:   Set mouse position and optionally flush the buffer
+ Parameters:    x = new X position
+                y = new Y position
+                flush = non-zero to flush buffered mouse packets
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_position(int x, int y, int flush)
+{
+    mouse_x = x;
+    mouse_y = y;
+    if (flush)
+    {
+        ospointer_os_flush_mouse();
+    }
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_position
+ Description:   Return mouse position
+ Parameters:    x = updated with X position
+                y = updated with Y position
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_position(int *x, int *y)
+{
+    *x = mouse_x;
+    *y = mouse_y;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_bounds
+ Description:   Set mouse bounds and clamp the current mouse position
+ Parameters:    left = left coordinate
+                bottom = bottom coordinate
+                right = right coordinate
+                top = top coordinate
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_bounds(int left, int bottom, int right, int top)
+{
+    mouse_left = left;
+    mouse_bottom = bottom;
+    mouse_right = right;
+    mouse_top = top;
+    mouse_x = clamp(mouse_x, mouse_left, mouse_right);
+    mouse_y = clamp(mouse_y, mouse_bottom, mouse_top);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_bounds
+ Description:   Return mouse bounds
+ Parameters:    left = updated with left coordinate
+                bottom = updated with bottom coordinate
+                right = updated with right coordinate
+                top = updated with top coordinate
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_bounds(int *left, int *bottom, int *right, int *top)
+{
+    *left = mouse_left;
+    *bottom = mouse_bottom;
+    *right = mouse_right;
+    *top = mouse_top;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_position_in_bounds
+ Description:   Test whether a coordinate lies inside current bounds
+ Parameters:    x = X coordinate
+                y = Y coordinate
+ Returns:       non-zero if inside bounds
+ ******************************************************************/
+int ospointer_mouse_position_in_bounds(int x, int y)
+{
+    return x >= mouse_left &&
+           x <= mouse_right &&
+           y >= mouse_bottom &&
+           y <= mouse_top;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_set_multipliers
+ Description:   Set mouse movement multipliers
+ Parameters:    x_mult = X multiplier
+                y_mult = Y multiplier
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_set_multipliers(int x_mult, int y_mult)
+{
+    mouse_x_mult = x_mult;
+    mouse_y_mult = y_mult;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_multipliers
+ Description:   Return mouse movement multipliers
+ Parameters:    x_mult = updated with X multiplier
+                y_mult = updated with Y multiplier
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_multipliers(int *x_mult, int *y_mult)
+{
+    *x_mult = mouse_x_mult;
+    *y_mult = mouse_y_mult;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_poll
+ Description:   Poll PointerV for movement, scroll and buttons
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_poll(void)
+{
+    _kernel_swi_regs r;
+
+    r.r[0] = PointerReason_ExtRequest;
+    r.r[1] = mouse_type_value;
+    r.r[2] = 0;
+    r.r[3] = 0;
+    r.r[4] = 0;
+    r.r[5] = 0;
+    r.r[6] = 0;
+    ospointer_os_call_pointer_vector(&r);
+
+    if (r.r[0] != -1 && r.r[0] != PointerReason_TouchState)
+    {
+        r.r[0] = PointerReason_Request;
+        r.r[1] = mouse_type_value;
+        r.r[2] = 0;
+        r.r[3] = 0;
+        ospointer_os_call_pointer_vector(&r);
+        r.r[4] = 0;
+        r.r[5] = 0;
+        r.r[6] = 0;
+    }
+
+    if (r.r[0] == PointerReason_TouchState)
+    {
+        int width;
+        int height;
+        int x;
+        int y;
+
+        ospointer_pointer_screen_size(&width, &height);
+        x = ((r.r[2] * width) >> 16) - mouse_x;
+        y = ((r.r[3] * height) >> 16) - mouse_y;
+        r.r[2] = x;
+        r.r[3] = y;
+        r.r[4] = 0;
+        r.r[5] = 0;
+        r.r[6] &= 0xff;
+        process_mouse_xy_scrolls(r.r[2], r.r[3], 0, 0, r.r[6]);
+    }
+    else
+    {
+        process_mouse_xy_scrolls(r.r[2], r.r[3], r.r[4], r.r[5], r.r[6]);
+    }
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_read
+ Description:   Return a MouseV position packet
+ Parameters:    r = register block to update
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_read(_kernel_swi_regs *r)
+{
+    int packet[3];
+    int got_packet;
+
+    got_packet = ospointer_os_buffer_remove(packet);
+    if (got_packet)
+    {
+        int x;
+        int y;
+
+        x = (short)(packet[0] & 0xffff);
+        y = (short)((unsigned int)packet[0] >> 16);
+        x = clamp(x, mouse_left, mouse_right);
+        y = clamp(y, mouse_bottom, mouse_top);
+        r->r[0] = x;
+        r->r[1] = y;
+        r->r[2] = packet[1] & 0xff;
+        r->r[3] = ((unsigned int)packet[1] >> 8) |
+                  ((unsigned int)packet[2] << 24);
+    }
+    else
+    {
+        r->r[0] = mouse_x;
+        r->r[1] = mouse_y;
+        r->r[2] = mouse_buttons_value;
+        r->r[3] = ospointer_os_monotonic_time();
+    }
+
+    ospointer_update_origin();
+    r->r[0] -= ospointer_pointer_origin_x();
+    r->r[1] -= ospointer_pointer_origin_y();
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_key
+ Description:   Process KeyV mouse button transitions
+ Parameters:    r = register block
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_key(_kernel_swi_regs *r)
+{
+    int bit;
+    int state;
+    int key;
+
+    if (r->r[0] == KEYV_STATE_CHANGE)
+    {
+        int button;
+
+        button = r->r[1] - KEY_EXT_MOUSE_BASE;
+        if (button <= 0 || button > 8)
+        {
+            return;
+        }
+
+        if (button == 1)
+        {
+            bit = MOUSE_BUTTON_LEFT;
+        }
+        else if (button == 2)
+        {
+            bit = MOUSE_BUTTON_RIGHT;
+        }
+        else if (button == 3)
+        {
+            bit = MOUSE_BUTTON_MIDDLE;
+        }
+        else
+        {
+            bit = 1 << (button - 1);
+        }
+        state = r->r[2] != 0;
+    }
+    else if (r->r[0] == KEYV_KEY_RELEASE || r->r[0] == KEYV_KEY_PRESS)
+    {
+        key = r->r[1];
+        bit = 0;
+        if (key == KEY_MOUSE_LEFT)
+        {
+            bit = MOUSE_BUTTON_LEFT;
+        }
+        else if (key == KEY_MOUSE_MIDDLE)
+        {
+            bit = MOUSE_BUTTON_MIDDLE;
+        }
+        else if (key == KEY_MOUSE_RIGHT)
+        {
+            bit = MOUSE_BUTTON_RIGHT;
+        }
+        if (bit == 0)
+        {
+            return;
+        }
+        state = r->r[0] == KEYV_KEY_PRESS;
+    }
+    else
+    {
+        return;
+    }
+
+    if (state)
+    {
+        mouse_button_change(mouse_buttons_value | bit);
+    }
+    else
+    {
+        mouse_button_change(mouse_buttons_value & ~bit);
+    }
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_event
+ Description:   Handle VSync and scroll events
+ Parameters:    r = register block
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_event(_kernel_swi_regs *r)
+{
+    if (r->r[0] == Event_VSync)
+    {
+        ospointer_mouse_poll();
+        ospointer_pointer_update();
+    }
+    else if (r->r[0] == Event_Expansion &&
+             r->r[1] == Event_Expansion_MouseScroll)
+    {
+        ospointer_pointer_scroll(r->r[2], r->r[3]);
+    }
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_register_buffer
+ Description:   Register the mouse buffer
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_mouse_register_buffer(void)
+{
+    _kernel_oserror *err;
+
+    err = ospointer_os_buffer_register(mouse_buffer, MOUSE_BUFFER_SIZE);
+    buffer_registered = err == NULL;
+    return err;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_deregister_buffer
+ Description:   Deregister the mouse buffer
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_deregister_buffer(void)
+{
+    ospointer_os_buffer_deregister();
+    buffer_registered = 0;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_mouse_buffer_manager_starting
+ Description:   Re-register mouse buffer after BufferManager starts
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_mouse_buffer_manager_starting(void)
+{
+    if (!buffer_registered)
+    {
+        ospointer_mouse_register_buffer();
+    }
+}
+
+
+static void mouse_button_change(int buttons)
+{
+    int old_buttons;
+    int packet[3];
+    int time;
+    int local_x;
+    int local_y;
+
+    old_buttons = mouse_buttons_value;
+    mouse_buttons_value = buttons & 0xff;
+    if (old_buttons == mouse_buttons_value)
+    {
+        return;
+    }
+
+    ospointer_update_origin();
+    local_x = mouse_x - ospointer_pointer_origin_x();
+    local_y = mouse_y - ospointer_pointer_origin_y();
+    time = ospointer_os_monotonic_time();
+
+    ospointer_os_generate_event(Event_Mouse,
+                                local_x,
+                                local_y,
+                                mouse_buttons_value);
+
+    packet[0] = ((mouse_y & 0xffff) << 16) | (mouse_x & 0xffff);
+    packet[1] = mouse_buttons_value | (time << 8);
+    packet[2] = ((unsigned int)time >> 24);
+    ospointer_os_buffer_insert(packet);
+}
+
+
+static void process_mouse_xy(int dx, int dy)
+{
+    if (dx != 0)
+    {
+        dx = (dx * mouse_x_mult) + mouse_x;
+        mouse_x = clamp(dx, mouse_left, mouse_right);
+    }
+
+    if (dy != 0)
+    {
+        dy = (dy * mouse_y_mult) + mouse_y;
+        mouse_y = clamp(dy, mouse_bottom, mouse_top);
+    }
+}
+
+
+static void process_mouse_xy_scrolls(int dx, int dy, int scroll_x,
+                                     int scroll_y, int buttons)
+{
+    int changed;
+    int bit;
+    int button;
+    static const int mouse_key_map[8] =
+    {
+        KEY_MOUSE_RIGHT,
+        KEY_MOUSE_MIDDLE,
+        KEY_MOUSE_LEFT,
+        0x90004,
+        0x90005,
+        0x90006,
+        0x90007,
+        0x90008
+    };
+
+    if (scroll_x != 0 || scroll_y != 0)
+    {
+        ospointer_os_generate_event(Event_Expansion,
+                                    Event_Expansion_MouseScroll,
+                                    scroll_x,
+                                    scroll_y);
+    }
+
+    ospointer_pointer_buttons(buttons);
+    changed = mouse_buttons_value ^ (buttons & 0xff);
+    bit = 1;
+    button = 0;
+    while (changed != 0 && button < 8)
+    {
+        if (changed & bit)
+        {
+            _kernel_swi_regs kr;
+
+            kr.r[0] = (buttons & bit) ? KEYV_KEY_PRESS : KEYV_KEY_RELEASE;
+            kr.r[1] = mouse_key_map[button];
+            if (kr.r[1] >= 0x100)
+            {
+                kr.r[2] = (buttons & bit) ? 1 : 0;
+                kr.r[0] = KEYV_STATE_CHANGE;
+                kr.r[3] = KEYV_STATE_SOURCE_SIMPLE;
+                kr.r[4] = 0;
+            }
+            ospointer_os_call_keyv(&kr);
+        }
+        changed &= ~bit;
+        bit <<= 1;
+        button++;
+    }
+
+    mouse_button_change(buttons);
+    process_mouse_xy(dx, dy);
+}
+
+
+static int clamp(int value, int min, int max)
+{
+    if (value < min)
+    {
+        return min;
+    }
+    if (value > max)
+    {
+        return max;
+    }
+    return value;
+}

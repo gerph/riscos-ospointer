@@ -1,0 +1,639 @@
+/*******************************************************************
+ * File:        pointer
+ * Purpose:     Pointer shape, position and OS_Word handling
+ * Author:      Gerph
+ ******************************************************************/
+
+#include <stdint.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "riscos/Events.h"
+#include "riscos/ModeVariables.h"
+#include "riscos/Oswords.h"
+#include "riscos/Pointer.h"
+#include "riscos/Services.h"
+#include "riscos/VideoV.h"
+
+#include "modhead.h"
+#include "mouse.h"
+#include "os.h"
+#include "pointer.h"
+
+#define OSBYTE_WRITE_POINTER_SHAPE 0x6a
+#define OSBYTE_INKEY               0x81
+#define POINTER_COUNT              4
+#define POINTER_WIDTH_MAX          8
+#define POINTER_HEIGHT_MAX         32
+#define POINTER_SHAPE_UNLINKED     0x80
+#define VDUVAR_ORGX                136
+#define VDUVAR_ORGY                137
+
+typedef struct pointer_data
+{
+    unsigned char height;
+    unsigned char active_x;
+    unsigned char active_y;
+} pointer_data_t;
+
+static pointer_data_t pointer_defs[POINTER_COUNT];
+static int pointer_shape;
+static int pointer_x;
+static int pointer_y;
+static int pointer_scroll_x;
+static int pointer_scroll_y;
+static int pointer_buttons;
+static int pointer_xeig_factor;
+static int display_xwind_limit;
+static int display_ywind_limit;
+static int display_xeig_factor;
+static int display_yeig_factor;
+static int origin_x;
+static int origin_y;
+static int display_number;
+static int pointer_removed;
+static int pointer_last_x;
+static int pointer_last_y;
+
+static int read_signed16(const unsigned char *p);
+static void write_signed16(unsigned char *p, int value);
+static int read_coord_pair(const unsigned char *block, int *x, int *y);
+static void write_coord_pair(unsigned char *block, int x, int y);
+static void update_zero_page(void);
+static void reset_video_cache(void);
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_init
+ Description:   Initialise pointer state
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_init(void)
+{
+    memset(pointer_defs, 0, sizeof(pointer_defs));
+    pointer_shape = 0;
+    pointer_x = 0;
+    pointer_y = 0;
+    pointer_scroll_x = 0;
+    pointer_scroll_y = 0;
+    pointer_buttons = 0;
+    display_number = ospointer_os_display_number();
+    reset_video_cache();
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_final
+ Description:   Finalise pointer state
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_final(void)
+{
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_mode_change
+ Description:   Read display geometry and reset pointer bounds
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_pointer_mode_change(void)
+{
+    static const int vars[] =
+    {
+        ModeVariable_Log2BPC,
+        ModeVariable_Log2BPP,
+        ModeVariable_XEigFactor,
+        ModeVariable_YEigFactor,
+        ModeVariable_XWindLimit,
+        ModeVariable_YWindLimit,
+        -1
+    };
+    int values[6];
+    int ec_width;
+    int ec_height;
+    _kernel_oserror *err;
+
+    err = ospointer_os_read_vdu_variables(vars, values);
+    if (err != NULL)
+    {
+        return err;
+    }
+
+    display_xeig_factor = values[2];
+    pointer_xeig_factor = values[2] - values[0] + values[1];
+    display_yeig_factor = values[3];
+    display_xwind_limit = values[4];
+    display_ywind_limit = values[5];
+
+    pointer_shape = 0;
+    origin_x = 0;
+    origin_y = 0;
+
+    ec_width = (display_xwind_limit + 1) << display_xeig_factor;
+    ec_height = (display_ywind_limit + 1) << display_yeig_factor;
+    pointer_x = ec_width >> 1;
+    pointer_y = ec_height >> 1;
+    ospointer_mouse_set_position(pointer_x, pointer_y, 1);
+    ospointer_mouse_set_bounds(0, 0, ec_width - 1, ec_height - 1);
+    reset_video_cache();
+    update_zero_page();
+
+    return NULL;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_display_changed
+ Description:   Record active display change
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_display_changed(void)
+{
+    display_number = ospointer_os_display_number();
+    reset_video_cache();
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_select_mouse_type
+ Description:   Notify pointer drivers of the current mouse type
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_select_mouse_type(void)
+{
+    _kernel_swi_regs r;
+
+    r.r[0] = PointerReason_Selected;
+    r.r[1] = ospointer_mouse_type();
+    ospointer_os_call_pointer_vector(&r);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_swi
+ Description:   Handle OS_Pointer
+ Parameters:    r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_pointer_swi(_kernel_swi_regs *r)
+{
+    switch (r->r[0])
+    {
+        case OSPointer_ReadMouseType:
+            r->r[0] = ospointer_mouse_type();
+            return NULL;
+
+        case OSPointer_SetMouseType:
+            ospointer_mouse_set_type(r->r[1]);
+            ospointer_pointer_select_mouse_type();
+            return NULL;
+
+        case OSPointer_ReadAltPosition:
+            r->r[0] = pointer_scroll_x;
+            r->r[1] = pointer_scroll_y;
+            return NULL;
+
+        default:
+            return err_bad_parameters;
+    }
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_osbyte
+ Description:   Handle OS_Byte pointer and INKEY calls
+ Parameters:    r = register block
+ Returns:       non-zero if handled
+ ******************************************************************/
+int ospointer_pointer_osbyte(_kernel_swi_regs *r)
+{
+    int shape;
+    int old_shape;
+    int key;
+    int button;
+
+    if (r->r[0] == OSBYTE_INKEY)
+    {
+        if ((r->r[2] & 0xff) != 0xff || (r->r[1] & 0xff) < 0x80)
+        {
+            return 0;
+        }
+
+        key = ((r->r[1] & 0xff) ^ 0xff) - 9;
+        if (key < 0 || key > 2)
+        {
+            return 0;
+        }
+
+        if (key <= 2)
+        {
+            key = 2 - key;
+        }
+        button = 1 << key;
+        r->r[1] = (ospointer_mouse_buttons() & button) ? 255 : 0;
+        return 1;
+    }
+
+    if (r->r[0] != OSBYTE_WRITE_POINTER_SHAPE)
+    {
+        return 0;
+    }
+
+    old_shape = pointer_shape & 0xff;
+    shape = r->r[1] & 0x7f;
+    if (shape < POINTER_COUNT + 1)
+    {
+        pointer_shape = r->r[1] & 0xff;
+    }
+    r->r[1] = old_shape;
+
+    if (shape != 0 && shape < POINTER_COUNT + 1)
+    {
+        _kernel_swi_regs vr;
+
+        vr.r[0] = shape - 1;
+        ospointer_os_call_video_pointer(VideoV_Pointer_Select,
+                                        display_number,
+                                        &vr);
+        reset_video_cache();
+    }
+
+    return 1;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_osword
+ Description:   Handle OS_Word 21 pointer and mouse calls
+ Parameters:    r = register block
+ Returns:       non-zero if handled
+ ******************************************************************/
+int ospointer_pointer_osword(_kernel_swi_regs *r)
+{
+    unsigned char *block;
+    int reason;
+    int x;
+    int y;
+
+    if (r->r[0] != OsWord_DefinePointerAndMouse)
+    {
+        return 0;
+    }
+
+    block = (unsigned char *)(uintptr_t)r->r[1];
+    reason = block[0];
+
+    switch (reason)
+    {
+        case 0:
+        {
+            int shape;
+            int width;
+            int height;
+            int active_x;
+            int active_y;
+            int data;
+            _kernel_swi_regs vr;
+
+            shape = block[1] - 1;
+            if (shape < 0 || shape >= POINTER_COUNT)
+            {
+                break;
+            }
+
+            width = block[2];
+            height = block[3];
+            active_x = block[4];
+            active_y = block[5];
+            if (height == 0 || width == 0)
+            {
+                pointer_defs[shape].height = 0;
+                break;
+            }
+
+            if (width > POINTER_WIDTH_MAX ||
+                height > POINTER_HEIGHT_MAX ||
+                active_x >= width * 4 ||
+                active_y >= height)
+            {
+                break;
+            }
+
+            pointer_defs[shape].height = (unsigned char)height;
+            pointer_defs[shape].active_x = (unsigned char)active_x;
+            pointer_defs[shape].active_y = (unsigned char)active_y;
+            data = (int)block[6] |
+                   ((int)block[7] << 8) |
+                   ((int)block[8] << 16) |
+                   ((int)block[9] << 24);
+
+            vr.r[0] = width;
+            vr.r[1] = data;
+            vr.r[2] = height;
+            vr.r[6] = shape;
+            ospointer_os_call_video_pointer(VideoV_Pointer_Define,
+                                            display_number,
+                                            &vr);
+            reset_video_cache();
+
+            if ((pointer_shape & 0x7f) == shape + 1)
+            {
+                int r1;
+
+                r1 = pointer_shape;
+                ospointer_os_byte(OSBYTE_WRITE_POINTER_SHAPE,
+                                  r1,
+                                  NULL,
+                                  NULL);
+            }
+            break;
+        }
+
+        case 1:
+        {
+            int left;
+            int bottom;
+            int right;
+            int top;
+
+            left = read_signed16(block + 1);
+            bottom = read_signed16(block + 3);
+            right = read_signed16(block + 5);
+            top = read_signed16(block + 7);
+            ospointer_update_origin();
+            left = (short)(left + origin_x);
+            right = (short)(right + origin_x);
+            bottom = (short)(bottom + origin_y);
+            top = (short)(top + origin_y);
+            if (right >= left && top >= bottom)
+            {
+                ospointer_mouse_set_bounds(left, bottom, right, top);
+                update_zero_page();
+            }
+            break;
+        }
+
+        case 2:
+            ospointer_mouse_set_multipliers((signed char)block[1],
+                                            (signed char)block[2]);
+            update_zero_page();
+            break;
+
+        case 3:
+            if (read_coord_pair(block, &x, &y) &&
+                ospointer_mouse_position_in_bounds(x, y))
+            {
+                ospointer_mouse_set_position(x, y, 1);
+                update_zero_page();
+            }
+            break;
+
+        case 4:
+            ospointer_mouse_poll();
+            ospointer_mouse_position(&x, &y);
+            write_coord_pair(block, x, y);
+            break;
+
+        case 5:
+            read_coord_pair(block, &pointer_x, &pointer_y);
+            update_zero_page();
+            break;
+
+        case 6:
+            write_coord_pair(block, pointer_x, pointer_y);
+            break;
+
+        case 7:
+        {
+            int left;
+            int bottom;
+            int right;
+            int top;
+
+            ospointer_mouse_bounds(&left, &bottom, &right, &top);
+            write_coord_pair(block, left, bottom);
+            write_coord_pair(block + 4, right, top);
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    return 1;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_update
+ Description:   Update the visible pointer position
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_update(void)
+{
+    int shape;
+    int index;
+    int x;
+    int y;
+    pointer_data_t *def;
+    _kernel_swi_regs vr;
+
+    if ((pointer_shape & POINTER_SHAPE_UNLINKED) == 0)
+    {
+        ospointer_mouse_position(&pointer_x, &pointer_y);
+        update_zero_page();
+    }
+
+    shape = pointer_shape & 0x7f;
+    if (shape == 0)
+    {
+        if (!pointer_removed)
+        {
+            ospointer_os_call_video_pointer(VideoV_Pointer_Remove,
+                                            display_number,
+                                            &vr);
+            pointer_removed = 1;
+            pointer_last_x = -1;
+            pointer_last_y = -1;
+        }
+        return;
+    }
+
+    index = shape - 1;
+    def = &pointer_defs[index];
+    if (def->height == 0)
+    {
+        if (!pointer_removed)
+        {
+            ospointer_os_call_video_pointer(VideoV_Pointer_Remove,
+                                            display_number,
+                                            &vr);
+            pointer_removed = 1;
+            pointer_last_x = -1;
+            pointer_last_y = -1;
+        }
+        return;
+    }
+
+    x = (pointer_x >> pointer_xeig_factor) - def->active_x;
+    y = display_ywind_limit - (pointer_y >> display_yeig_factor);
+    y -= def->active_y;
+
+    if (pointer_last_x == x && pointer_last_y == y)
+    {
+        return;
+    }
+
+    pointer_removed = 0;
+    pointer_last_x = x;
+    pointer_last_y = y;
+    vr.r[1] = y;
+    vr.r[2] = x;
+    ospointer_os_call_video_pointer(VideoV_Pointer_Update,
+                                    display_number,
+                                    &vr);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_scroll
+ Description:   Update alternate scroll position
+ Parameters:    x = horizontal scroll delta
+                y = vertical scroll delta
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_scroll(int x, int y)
+{
+    pointer_scroll_x += x;
+    pointer_scroll_y += y;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_buttons
+ Description:   Update extended pointer button state
+ Parameters:    buttons = new button bit mask
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_buttons(int buttons)
+{
+    pointer_buttons = buttons;
+}
+
+
+static int read_signed16(const unsigned char *p)
+{
+    return (short)((int)p[0] | ((int)p[1] << 8));
+}
+
+
+static void write_signed16(unsigned char *p, int value)
+{
+    p[0] = (unsigned char)value;
+    p[1] = (unsigned char)(value >> 8);
+}
+
+
+static int read_coord_pair(const unsigned char *block, int *x, int *y)
+{
+    ospointer_update_origin();
+    *x = (short)(read_signed16(block + 1) + origin_x);
+    *y = (short)(read_signed16(block + 3) + origin_y);
+    return 1;
+}
+
+
+static void write_coord_pair(unsigned char *block, int x, int y)
+{
+    ospointer_update_origin();
+    write_signed16(block + 1, x - origin_x);
+    write_signed16(block + 3, y - origin_y);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_update_origin
+ Description:   Read and cache the graphics origin
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_update_origin(void)
+{
+    static const int vars[] = { VDUVAR_ORGX, VDUVAR_ORGY, -1 };
+    int values[2];
+
+    if (ospointer_os_read_vdu_variables(vars, values) == NULL)
+    {
+        origin_x = values[0];
+        origin_y = values[1];
+    }
+    else
+    {
+        origin_x = 0;
+        origin_y = 0;
+    }
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_origin_x
+ Description:   Return cached graphics origin X
+ Parameters:    none
+ Returns:       origin X
+ ******************************************************************/
+int ospointer_pointer_origin_x(void)
+{
+    return origin_x;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_origin_y
+ Description:   Return cached graphics origin Y
+ Parameters:    none
+ Returns:       origin Y
+ ******************************************************************/
+int ospointer_pointer_origin_y(void)
+{
+    return origin_y;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_pointer_screen_size
+ Description:   Return current screen size in external coordinates
+ Parameters:    width = updated with screen width
+                height = updated with screen height
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_screen_size(int *width, int *height)
+{
+    *width = (display_xwind_limit + 1) << display_xeig_factor;
+    *height = (display_ywind_limit + 1) << display_yeig_factor;
+}
+
+
+static void update_zero_page(void)
+{
+    /*
+     * The assembler source mirrored state into historical low-memory
+     * locations for programs that read undocumented kernel workspace. Those
+     * writes are unsafe in the protected build-run environment, so the C
+     * module keeps compatibility to the documented calls only.
+     */
+}
+
+
+static void reset_video_cache(void)
+{
+    pointer_removed = 0;
+    pointer_last_x = -1;
+    pointer_last_y = -1;
+}

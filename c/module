@@ -1,16 +1,23 @@
 /*******************************************************************
  * File:        module
- * Purpose:     OSPointer module interface
- * Author:      YOUR NAME
+ * Purpose:     OSPointer module interface and vector veneers
+ * Author:      Gerph
  ******************************************************************/
 
 #include <stdlib.h>
 #include <stdio.h>
 
 #include "kernel.h"
-#include "modhead.h"
+#include "swis.h"
+#include "riscos/Services.h"
+#include "riscos/Vectors.h"
 
-#define DEBUG
+#include "modhead.h"
+#include "mouse.h"
+#include "os.h"
+#include "pointer.h"
+
+/* #define DEBUG */
 
 #ifdef DEBUG
 #define dprintf if (1) printf
@@ -18,40 +25,220 @@
 #define dprintf if (0) printf
 #endif
 
+static int ospointer_claimed_vectors;
 
-/***************************************************************************
- * Function:     Mod_Init
- * Description:  Initialise the module, setting up vectors, callbacks and
- *               any other parts of the system necessary for the module to
- *               function.
- * Parameters:   tail        = pointer to command line (control terminated)
- *               podule_base = address of podule module was started from, or
- *                             NULL if none
- *               pw          = private word for module
- * On exit:      Return NULL for successful initialisation, or a pointer to
- *               an error block if the module could not start properly.
- **************************************************************************/
+
+/*******************************************************************
+ Function:      Mod_Init
+ Description:   Initialise the module workspace, claimed SWI and vectors
+ Parameters:    tail = pointer to command line
+                podule_base = podule base, or NULL
+                pw = module private word
+ Returns:       NULL on success, or an error pointer
+ ******************************************************************/
 _kernel_oserror *Mod_Init(const char *tail, int podule_base, void *pw)
 {
+    _kernel_oserror *err;
+
+    (void)tail;
+    (void)podule_base;
+
     dprintf("Module OSPointer initialised\n");
+
+    ospointer_pointer_init();
+    ospointer_mouse_init();
+
+    err = ospointer_os_claim_ospointer(SWIOSPointer_Entry, pw);
+    if (err != NULL)
+    {
+        return err;
+    }
+
+    err = ospointer_os_byte(0x6a, 0, NULL, NULL);
+    if (err != NULL)
+    {
+        ospointer_os_release_ospointer(SWIOSPointer_Entry, pw);
+        return err;
+    }
+
+    err = ospointer_pointer_mode_change();
+    if (err != NULL)
+    {
+        ospointer_os_release_ospointer(SWIOSPointer_Entry, pw);
+        return err;
+    }
+
+    err = ospointer_os_claim_vectors(pw);
+    if (err != NULL)
+    {
+        ospointer_os_release_vectors(pw);
+        ospointer_os_release_ospointer(SWIOSPointer_Entry, pw);
+        return err;
+    }
+    ospointer_claimed_vectors = 1;
+
+    ospointer_mouse_register_buffer();
+
+    ospointer_pointer_select_mouse_type();
+
     return NULL;
 }
 
 
-/***************************************************************************
- * Function:     Mod_Final
- * Description:  Finalise the module, shutting down any systems necessary,
- *               freeing vectors and releasing workspace
- * Parameters:   fatal       = fatality indicator; 1 if fatal, 0 if
- *                             reinitialising
- *               podule_base = address of podule module was started from, or
- *                             NULL if none
- *               pw          = private word for module
- * On exit:      Return 0 for successful finalisation, or a pointer to an
- *               error block if module was not shutdown properly.
- **************************************************************************/
+/*******************************************************************
+ Function:      Mod_Final
+ Description:   Finalise the module and release claimed system state
+ Parameters:    fatal = fatality indicator
+                podule_base = podule base, or NULL
+                pw = module private word
+ Returns:       NULL
+ ******************************************************************/
 _kernel_oserror *Mod_Final(int fatal, int podule_base, void *pw)
 {
+    (void)fatal;
+    (void)podule_base;
+
     dprintf("Module OSPointer dying\n");
+
+    ospointer_mouse_deregister_buffer();
+    if (ospointer_claimed_vectors)
+    {
+        ospointer_os_release_vectors(pw);
+        ospointer_claimed_vectors = 0;
+    }
+    ospointer_pointer_final();
+    ospointer_os_release_ospointer(SWIOSPointer_Entry, pw);
+
     return NULL;
+}
+
+
+/*******************************************************************
+ Function:      Mod_Service
+ Description:   Handle mode-change and BufferManager restart services
+ Parameters:    service = service reason code
+                r = register block
+                pw = module private word
+ Returns:       none
+ ******************************************************************/
+void Mod_Service(int service, _kernel_swi_regs *r, void *pw)
+{
+    (void)r;
+    (void)pw;
+
+    if (service == Service_ModeChange)
+    {
+        ospointer_pointer_mode_change();
+    }
+    else if (service == Service_DisplayChanged)
+    {
+        ospointer_pointer_display_changed();
+    }
+    else if (service == Service_BufferStarting)
+    {
+        ospointer_mouse_buffer_manager_starting();
+    }
+}
+
+
+/*******************************************************************
+ Function:      ByteV_Handler
+ Description:   Trap OS_Byte 106 pointer selection and INKEY mouse buttons
+ Parameters:    r = register block
+                pw = module private word
+ Returns:       VECTOR_CLAIM if handled, otherwise VECTOR_PASSON
+ ******************************************************************/
+int ByteV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    (void)pw;
+
+    if (ospointer_pointer_osbyte(r))
+    {
+        return VECTOR_CLAIM;
+    }
+
+    return VECTOR_PASSON;
+}
+
+
+/*******************************************************************
+ Function:      WordV_Handler
+ Description:   Trap OS_Word 21 pointer and mouse operations
+ Parameters:    r = register block
+                pw = module private word
+ Returns:       VECTOR_CLAIM if handled, otherwise VECTOR_PASSON
+ ******************************************************************/
+int WordV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    (void)pw;
+
+    if (ospointer_pointer_osword(r))
+    {
+        return VECTOR_CLAIM;
+    }
+
+    return VECTOR_PASSON;
+}
+
+
+/*******************************************************************
+ Function:      MouseV_Handler
+ Description:   Return the current or buffered mouse state
+ Parameters:    r = register block
+                pw = module private word
+ Returns:       VECTOR_CLAIM
+ ******************************************************************/
+int MouseV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    (void)pw;
+
+    ospointer_mouse_read(r);
+    return VECTOR_CLAIM;
+}
+
+
+/*******************************************************************
+ Function:      KeyV_Handler
+ Description:   Track mouse button key events
+ Parameters:    r = register block
+                pw = module private word
+ Returns:       VECTOR_PASSON
+ ******************************************************************/
+int KeyV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    (void)pw;
+
+    ospointer_mouse_key(r);
+    return VECTOR_PASSON;
+}
+
+
+/*******************************************************************
+ Function:      EventV_Handler
+ Description:   Handle VSync and mouse scroll events
+ Parameters:    r = register block
+                pw = module private word
+ Returns:       VECTOR_PASSON
+ ******************************************************************/
+int EventV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    (void)pw;
+
+    ospointer_mouse_event(r);
+    return VECTOR_PASSON;
+}
+
+
+/*******************************************************************
+ Function:      SWIOSPointer_Handler
+ Description:   Claimed handler for the kernel OS_Pointer SWI
+ Parameters:    r = register block
+                pw = module private word
+ Returns:       NULL on success, or an error pointer
+ ******************************************************************/
+_kernel_oserror *SWIOSPointer_Handler(_kernel_swi_regs *r, void *pw)
+{
+    (void)pw;
+
+    return ospointer_pointer_swi(r);
 }

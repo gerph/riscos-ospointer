@@ -1,0 +1,391 @@
+/*******************************************************************
+ * File:        os
+ * Purpose:     SWI wrappers used by OSPointer
+ * Author:      Gerph
+ ******************************************************************/
+
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "kernel.h"
+#include "swis.h"
+#include "riscos/Events.h"
+#include "riscos/ModeVariables.h"
+#include "riscos/OSScreenMode.h"
+#include "riscos/Vectors.h"
+#include "riscos/VideoV.h"
+
+#include "modhead.h"
+#include "os.h"
+
+#define BUFFER_REGISTER_FLAGS_INPUT_FULL 4
+#define OSBYTE_ENABLE_EVENT              14
+#define OSBYTE_DISABLE_EVENT             13
+#define OSBYTE_FLUSH_BUFFER              21
+#define BUFFER_MOUSE                     9
+
+
+/*******************************************************************
+ Function:      ospointer_os_byte
+ Description:   Call OS_Byte and optionally return R1/R2
+ Parameters:    r0 = OS_Byte reason
+                r1 = input R1
+                out_r1 = optional output R1
+                out_r2 = optional output R2
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_byte(int r0, int r1, int *out_r1, int *out_r2)
+{
+    int r2;
+
+    r2 = 0;
+    return _swix(OS_Byte,
+                 _INR(0, 1) | _OUT(1) | _OUT(2),
+                 r0,
+                 r1,
+                 out_r1 == NULL ? &r1 : out_r1,
+                 out_r2 == NULL ? &r2 : out_r2);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_claim_ospointer
+ Description:   Claim the OS_Pointer SWI
+ Parameters:    entry = SWI handler entry veneer
+                pw = module private word
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_claim_ospointer(void (*entry)(void), void *pw)
+{
+    return _swix(OS_ClaimOSSWI, _INR(0, 3), 0, OS_Pointer, entry, pw);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_release_ospointer
+ Description:   Release the OS_Pointer SWI
+ Parameters:    entry = SWI handler entry veneer
+                pw = module private word
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_release_ospointer(void (*entry)(void), void *pw)
+{
+    return _swix(OS_ClaimOSSWI, _INR(0, 3), 1, OS_Pointer, entry, pw);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_claim_vectors
+ Description:   Claim all vectors used by OSPointer and enable events
+ Parameters:    pw = module private word
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_claim_vectors(void *pw)
+{
+    _kernel_oserror *err;
+
+    err = _swix(OS_Claim, _INR(0, 2), MouseV, MouseV_Entry, pw);
+    if (err != NULL)
+    {
+        return err;
+    }
+
+    err = _swix(OS_Claim, _INR(0, 2), EventV, EventV_Entry, pw);
+    if (err != NULL)
+    {
+        goto release_mousev;
+    }
+
+    err = ospointer_os_byte(OSBYTE_ENABLE_EVENT, Event_VSync, NULL, NULL);
+    if (err != NULL)
+    {
+        goto release_eventv;
+    }
+
+    err = ospointer_os_byte(OSBYTE_ENABLE_EVENT, Event_Expansion, NULL, NULL);
+    if (err != NULL)
+    {
+        goto disable_vsync;
+    }
+
+    err = _swix(OS_Claim, _INR(0, 2), WordV, WordV_Entry, pw);
+    if (err != NULL)
+    {
+        goto disable_expansion;
+    }
+
+    err = _swix(OS_Claim, _INR(0, 2), ByteV, ByteV_Entry, pw);
+    if (err != NULL)
+    {
+        goto release_wordv;
+    }
+
+    err = _swix(OS_Claim, _INR(0, 2), KEYV, KeyV_Entry, pw);
+    if (err != NULL)
+    {
+        goto release_bytev;
+    }
+
+    return NULL;
+
+release_bytev:
+    _swix(OS_Release, _INR(0, 2), ByteV, ByteV_Entry, pw);
+release_wordv:
+    _swix(OS_Release, _INR(0, 2), WordV, WordV_Entry, pw);
+disable_expansion:
+    ospointer_os_byte(OSBYTE_DISABLE_EVENT, Event_Expansion, NULL, NULL);
+disable_vsync:
+    ospointer_os_byte(OSBYTE_DISABLE_EVENT, Event_VSync, NULL, NULL);
+release_eventv:
+    _swix(OS_Release, _INR(0, 2), EventV, EventV_Entry, pw);
+release_mousev:
+    _swix(OS_Release, _INR(0, 2), MouseV, MouseV_Entry, pw);
+
+    return err;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_release_vectors
+ Description:   Release all vectors used by OSPointer and disable events
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+void ospointer_os_release_vectors(void *pw)
+{
+    _swix(OS_Release, _INR(0, 2), MouseV, MouseV_Entry, pw);
+    ospointer_os_byte(OSBYTE_DISABLE_EVENT, Event_VSync, NULL, NULL);
+    ospointer_os_byte(OSBYTE_DISABLE_EVENT, Event_Expansion, NULL, NULL);
+    _swix(OS_Release, _INR(0, 2), EventV, EventV_Entry, pw);
+    _swix(OS_Release, _INR(0, 2), WordV, WordV_Entry, pw);
+    _swix(OS_Release, _INR(0, 2), ByteV, ByteV_Entry, pw);
+    _swix(OS_Release, _INR(0, 2), KEYV, KeyV_Entry, pw);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_read_cmos
+ Description:   Read a CMOS byte
+ Parameters:    cmos = CMOS byte number
+ Returns:       CMOS byte value
+ ******************************************************************/
+int ospointer_os_read_cmos(int cmos)
+{
+    int value;
+
+    value = 0;
+    _swix(OS_Byte, _IN(0) | _IN(1) | _OUT(2), 0xa1, cmos, &value);
+    return value & 0xff;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_read_vdu_variables
+ Description:   Read a list of VDU variables
+ Parameters:    vars = -1 terminated variable list
+                values = returned values
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_read_vdu_variables(const int *vars, int *values)
+{
+    return _swix(OS_ReadVduVariables, _INR(0, 1), vars, values);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_monotonic_time
+ Description:   Read the monotonic time
+ Parameters:    none
+ Returns:       monotonic time
+ ******************************************************************/
+int ospointer_os_monotonic_time(void)
+{
+    int time;
+
+    time = 0;
+    _swix(OS_ReadMonotonicTime, _OUT(0), &time);
+    return time;
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_call_pointer_vector
+ Description:   Call PointerV
+ Parameters:    r = register block for the vector call
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_call_pointer_vector(_kernel_swi_regs *r)
+{
+    r->r[9] = PointerV;
+    return _kernel_swi(OS_CallAVector, r, r);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_call_video_pointer
+ Description:   Call VideoV pointer operations
+ Parameters:    reason = VideoV pointer reason
+                display = display number
+                r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_call_video_pointer(int reason, int display,
+                                                _kernel_swi_regs *r)
+{
+    r->r[7] = display;
+    r->r[8] = reason;
+    r->r[9] = VideoV;
+    return _kernel_swi(OS_CallAVector, r, r);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_generate_event
+ Description:   Generate a RISC OS event
+ Parameters:    r0 = event number
+                r1 = event parameter 1
+                r2 = event parameter 2
+                r3 = event parameter 3
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_generate_event(int r0, int r1, int r2, int r3)
+{
+    return _swix(OS_GenerateEvent,
+                 _INR(0, 3),
+                 r0,
+                 r1,
+                 r2,
+                 r3);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_call_keyv
+ Description:   Call KeyV with the supplied register block
+ Parameters:    r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_call_keyv(_kernel_swi_regs *r)
+{
+    r->r[9] = KEYV;
+    return _kernel_swi(OS_CallAVector, r, r);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_register
+ Description:   Register the mouse buffer
+ Parameters:    start = buffer start
+                size = buffer size
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_buffer_register(unsigned char *start, int size)
+{
+    int handle;
+
+    return _swix(Buffer_Register,
+                 _INR(0, 3) | _OUT(0),
+                 BUFFER_REGISTER_FLAGS_INPUT_FULL,
+                 start,
+                 start + size,
+                 BUFFER_MOUSE,
+                 &handle);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_deregister
+ Description:   Deregister the mouse buffer
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_buffer_deregister(void)
+{
+    return _swix(Buffer_Deregister, _IN(0), BUFFER_MOUSE);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_insert
+ Description:   Insert a mouse packet through INSV
+ Parameters:    packet = 9-byte packet held in words
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_buffer_insert(int packet[3])
+{
+    _kernel_swi_regs r;
+
+    r.r[1] = BUFFER_MOUSE | (1u << 31);
+    r.r[2] = (int)(uintptr_t)packet;
+    r.r[3] = 9;
+    r.r[9] = INSV;
+
+    return _kernel_swi(OS_CallAVector, &r, &r);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_remove
+ Description:   Remove a mouse packet through REMV
+ Parameters:    packet = returned packet
+ Returns:       1 if a packet was removed, otherwise 0
+ ******************************************************************/
+int ospointer_os_buffer_remove(int packet[3])
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    int carry;
+
+    r.r[1] = BUFFER_MOUSE | (1u << 31);
+    r.r[2] = (int)(uintptr_t)packet;
+    r.r[3] = 9;
+    r.r[9] = REMV;
+
+#ifdef __riscos64
+    /* FIXME: Not implemented for RISC OS 64 */
+    (void)carry;
+    return 0;
+#else
+    carry = 1;
+    err = _kernel_swi_c(OS_CallAVector, &r, &r, &carry);
+    return err == NULL && !carry;
+#endif
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_flush_mouse
+ Description:   Flush the mouse buffer
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_flush_mouse(void)
+{
+    return ospointer_os_byte(OSBYTE_FLUSH_BUFFER, BUFFER_MOUSE, NULL, NULL);
+}
+
+
+/*******************************************************************
+ Function:      ospointer_os_display_number
+ Description:   Read the selected display number
+ Parameters:    none
+ Returns:       display number, or zero if unsupported
+ ******************************************************************/
+int ospointer_os_display_number(void)
+{
+    int display;
+    _kernel_oserror *err;
+
+    display = -1;
+    err = _swix(OS_ScreenMode,
+                _INR(0, 1) | _OUT(1),
+                ScreenModeReason_DisplaySelect,
+                display,
+                &display);
+    if (err != NULL)
+    {
+        return 0;
+    }
+
+    return display;
+}

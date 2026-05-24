@@ -1,0 +1,134 @@
+/*******************************************************************
+ * File:        pointer
+ * Purpose:     Pointer state declarations for OSPointer
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef OSPOINTER_POINTER_H
+#define OSPOINTER_POINTER_H
+
+#include "kernel.h"
+
+/*******************************************************************
+ Function:      ospointer_pointer_init
+ Description:   Initialise pointer state
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_init(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_final
+ Description:   Finalise pointer state
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_final(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_mode_change
+ Description:   Read display geometry and reset pointer bounds
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_pointer_mode_change(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_display_changed
+ Description:   Record active display change
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_display_changed(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_select_mouse_type
+ Description:   Notify pointer drivers of the current mouse type
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_select_mouse_type(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_swi
+ Description:   Handle OS_Pointer
+ Parameters:    r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_pointer_swi(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_pointer_osbyte
+ Description:   Handle OS_Byte pointer calls
+ Parameters:    r = register block
+ Returns:       non-zero if handled
+ ******************************************************************/
+int ospointer_pointer_osbyte(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_pointer_osword
+ Description:   Handle OS_Word pointer and mouse calls
+ Parameters:    r = register block
+ Returns:       non-zero if handled
+ ******************************************************************/
+int ospointer_pointer_osword(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_pointer_update
+ Description:   Update the visible pointer position
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_update(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_scroll
+ Description:   Update alternate scroll position
+ Parameters:    x = horizontal scroll delta
+                y = vertical scroll delta
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_scroll(int x, int y);
+
+/*******************************************************************
+ Function:      ospointer_pointer_buttons
+ Description:   Update extended pointer button state
+ Parameters:    buttons = new button bit mask
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_buttons(int buttons);
+
+/*******************************************************************
+ Function:      ospointer_update_origin
+ Description:   Read and cache the graphics origin
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void ospointer_update_origin(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_origin_x
+ Description:   Return cached graphics origin X
+ Parameters:    none
+ Returns:       origin X
+ ******************************************************************/
+int ospointer_pointer_origin_x(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_origin_y
+ Description:   Return cached graphics origin Y
+ Parameters:    none
+ Returns:       origin Y
+ ******************************************************************/
+int ospointer_pointer_origin_y(void);
+
+/*******************************************************************
+ Function:      ospointer_pointer_screen_size
+ Description:   Return current screen size in external coordinates
+ Parameters:    width = updated with screen width
+                height = updated with screen height
+ Returns:       none
+ ******************************************************************/
+void ospointer_pointer_screen_size(int *width, int *height);
+
+#endif

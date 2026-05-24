@@ -1,0 +1,169 @@
+/*******************************************************************
+ * File:        os
+ * Purpose:     SWI wrapper declarations for OSPointer
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef OSPOINTER_OS_H
+#define OSPOINTER_OS_H
+
+#include "kernel.h"
+
+/*******************************************************************
+ Function:      ospointer_os_byte
+ Description:   Call OS_Byte and optionally return R1/R2
+ Parameters:    r0 = OS_Byte reason
+                r1 = input R1
+                out_r1 = optional output R1
+                out_r2 = optional output R2
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_byte(int r0, int r1, int *out_r1, int *out_r2);
+
+/*******************************************************************
+ Function:      ospointer_os_claim_ospointer
+ Description:   Claim the OS_Pointer SWI
+ Parameters:    entry = SWI handler entry veneer
+                pw = module private word
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_claim_ospointer(void (*entry)(void), void *pw);
+
+/*******************************************************************
+ Function:      ospointer_os_release_ospointer
+ Description:   Release the OS_Pointer SWI
+ Parameters:    entry = SWI handler entry veneer
+                pw = module private word
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_release_ospointer(void (*entry)(void), void *pw);
+
+/*******************************************************************
+ Function:      ospointer_os_claim_vectors
+ Description:   Claim all vectors used by OSPointer
+ Parameters:    pw = module private word
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_claim_vectors(void *pw);
+
+/*******************************************************************
+ Function:      ospointer_os_release_vectors
+ Description:   Release all vectors used by OSPointer
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+void ospointer_os_release_vectors(void *pw);
+
+/*******************************************************************
+ Function:      ospointer_os_read_cmos
+ Description:   Read a CMOS byte
+ Parameters:    cmos = CMOS byte number
+ Returns:       CMOS byte value
+ ******************************************************************/
+int ospointer_os_read_cmos(int cmos);
+
+/*******************************************************************
+ Function:      ospointer_os_read_vdu_variables
+ Description:   Read a list of VDU variables
+ Parameters:    vars = -1 terminated variable list
+                values = returned values
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_read_vdu_variables(const int *vars, int *values);
+
+/*******************************************************************
+ Function:      ospointer_os_monotonic_time
+ Description:   Read the monotonic time
+ Parameters:    none
+ Returns:       monotonic time
+ ******************************************************************/
+int ospointer_os_monotonic_time(void);
+
+/*******************************************************************
+ Function:      ospointer_os_call_pointer_vector
+ Description:   Call PointerV
+ Parameters:    r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_call_pointer_vector(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_os_call_video_pointer
+ Description:   Call VideoV pointer operations
+ Parameters:    reason = VideoV pointer reason
+                display = display number
+                r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_call_video_pointer(int reason, int display,
+                                                _kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_os_generate_event
+ Description:   Generate a RISC OS event
+ Parameters:    r0 = event number
+                r1 = event parameter 1
+                r2 = event parameter 2
+                r3 = event parameter 3
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_generate_event(int r0, int r1, int r2, int r3);
+
+/*******************************************************************
+ Function:      ospointer_os_call_keyv
+ Description:   Call KeyV with the supplied register block
+ Parameters:    r = register block
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_call_keyv(_kernel_swi_regs *r);
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_register
+ Description:   Register the mouse buffer
+ Parameters:    start = buffer start
+                size = buffer size
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_buffer_register(unsigned char *start, int size);
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_deregister
+ Description:   Deregister the mouse buffer
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_buffer_deregister(void);
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_insert
+ Description:   Insert a mouse packet through INSV
+ Parameters:    packet = packet words
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_buffer_insert(int packet[3]);
+
+/*******************************************************************
+ Function:      ospointer_os_buffer_remove
+ Description:   Remove a mouse packet through REMV
+ Parameters:    packet = returned packet words
+ Returns:       non-zero if a packet was removed
+ ******************************************************************/
+int ospointer_os_buffer_remove(int packet[3]);
+
+/*******************************************************************
+ Function:      ospointer_os_flush_mouse
+ Description:   Flush the mouse buffer
+ Parameters:    none
+ Returns:       Error pointer, or NULL
+ ******************************************************************/
+_kernel_oserror *ospointer_os_flush_mouse(void);
+
+/*******************************************************************
+ Function:      ospointer_os_display_number
+ Description:   Read the selected display number
+ Parameters:    none
+ Returns:       display number, or zero
+ ******************************************************************/
+int ospointer_os_display_number(void);
+
+#endif

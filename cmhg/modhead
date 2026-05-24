@@ -59,6 +59,8 @@ help-string: OSPointer Module_MajorVersion_CMHG
 ; space. The number is optional, and if omitted will be allocated from the
 ; error chunk.
 ;error-identifiers: err_Silly(&1234,"Silly")
+error-identifiers: \
+  err_bad_parameters(&1e, "Bad parameters")
 
 ; When the module is initialised, this routine will be entered. You should
 ; be very careful to initialise your module safely. If anything fails, you
@@ -118,6 +120,7 @@ finalisation-code: Mod_Final
 ;   carry-capable:           Veneer is capable of handling returning of the
 ;                            carry flag
 ;generic-veneers: Veneer_Entry/Veneer_Handler
+generic-veneers: SWIOSPointer_Entry/SWIOSPointer_Handler
 
 ; IRQ veneers are the old name for vector-handlers. Use vector-handlers in
 ; preference to irq-handlers.
@@ -134,6 +137,12 @@ finalisation-code: Mod_Final
 ;   error-capable: Veneer is capable of claiming the vector and returning an
 ;                  error
 ;vector-handlers: Vector_Entry/Vector_Handler
+vector-handlers: \
+  ByteV_Entry/ByteV_Handler \
+  WordV_Entry/WordV_Handler \
+  MouseV_Entry/MouseV_Handler \
+  KeyV_Entry/KeyV_Handler \
+  EventV_Entry/EventV_Handler
 
 ; VectorTrap veneers are used to provide a simple C environment for SVC and
 ; IRQ modes. You should register the Entry routine as the external interface
@@ -211,4 +220,4 @@ finalisation-code: Mod_Final
 ; strongly recommended to include the numbers of the services you wish to
 ; handle.
 ;service-call-handler: Mod_Service 1 2 3 4 5 6
-
+service-call-handler: Mod_Service &46 &6f &de
