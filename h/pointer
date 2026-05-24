@@ -7,7 +7,11 @@
 #ifndef OSPOINTER_POINTER_H
 #define OSPOINTER_POINTER_H
 
+#include <stdbool.h>
+
 #include "kernel.h"
+
+extern bool legacy_zeropage;
 
 /*******************************************************************
  Function:      ospointer_pointer_init

@@ -5,6 +5,7 @@
  ******************************************************************/
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -63,6 +64,7 @@ static int display_number;
 static int pointer_removed;
 static int pointer_last_x;
 static int pointer_last_y;
+bool legacy_zeropage = false;
 
 static int read_signed16(const unsigned char *p);
 static void write_signed16(unsigned char *p, int value);
@@ -650,12 +652,46 @@ void ospointer_pointer_screen_size(int *width, int *height)
 
 static void update_zero_page(void)
 {
+    volatile int *mouse_workspace;
+    volatile int *pointer_workspace;
+    int left;
+    int bottom;
+    int right;
+    int top;
+    int mouse_x;
+    int mouse_y;
+    int mult_x;
+    int mult_y;
+
+    if (!legacy_zeropage)
+    {
+        return;
+    }
+
     /*
-     * The assembler source mirrored state into historical low-memory
-     * locations for programs that read undocumented kernel workspace. Those
-     * writes are unsafe in the protected build-run environment, so the C
-     * module keeps compatibility to the documented calls only.
+     * Legacy compatibility for programs that read undocumented kernel
+     * workspace directly. This is disabled by default because protected
+     * environments may trap low-memory writes.
      */
+    mouse_workspace = (volatile int *)0x5a0;
+    ospointer_mouse_position(&mouse_x, &mouse_y);
+    ospointer_mouse_multipliers(&mult_x, &mult_y);
+    mouse_workspace[0] = mouse_x;
+    mouse_workspace[1] = mouse_y;
+    mouse_workspace[3] = mult_x;
+    mouse_workspace[4] = mult_y;
+
+    ospointer_mouse_bounds(&left, &bottom, &right, &top);
+    mouse_workspace = (volatile int *)0x5b8;
+    mouse_workspace[0] = left;
+    mouse_workspace[1] = bottom;
+    mouse_workspace[2] = right;
+    mouse_workspace[3] = top;
+
+    pointer_workspace = (volatile int *)0x1578;
+    pointer_workspace[0] = pointer_shape;
+    pointer_workspace[1] = pointer_x;
+    pointer_workspace[2] = pointer_y;
 }
 
 
