@@ -5,7 +5,7 @@
 #
 # Program specific options:
 #
-COMPONENT  = OSPointer
+COMPONENT  = OSPointer2
 
 # Specifies additional targets for startup
 INITTARGET = inittarget

@@ -39,7 +39,7 @@ jobs:
       # Tests - loading to check that it starts up
       - echo
       - echo *** Load the module ***
-      - RMLoad rm32.OSPointer
+      - RMLoad rm32.OSPointer2
 
       - echo
       - echo *** Test that the module works ***
